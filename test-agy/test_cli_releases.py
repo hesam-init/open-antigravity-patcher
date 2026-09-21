@@ -235,13 +235,17 @@ class CliReleaseCompatibilityTests(unittest.TestCase):
                     patches = []
                     data = bytearray(original)
                     for gate_obj, label in agy.ALL_GATES:
-                        kind, offsets, gate = gate_obj.resolve(data)
-                        self.assertEqual(
-                            kind, "unpatched",
-                            "%s: gate %r already patched in fresh %s"
-                            % (asset, label, asset))
-                        for off in offsets:
-                            patches.append((off, gate))
+                        matches = gate_obj.resolve_all(data)
+                        self.assertTrue(
+                            matches, "%s: no gate matched fresh %s" % (asset, asset))
+                        for kind, offsets, gate in matches:
+                            with self.subTest(asset=asset, gate=gate.desc):
+                                self.assertEqual(
+                                    kind, "unpatched",
+                                    "%s: gate %r already patched in fresh %s"
+                                    % (asset, gate.desc, asset))
+                            for off in offsets:
+                                patches.append((off, gate))
                     self.assertTrue(patches, "no patches collected for %s" % asset)
 
                     patched = apply_patches_to_data(bytearray(original), patches)

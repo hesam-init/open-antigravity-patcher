@@ -65,25 +65,37 @@ class Gate:
         kind, offsets = self.find(data)
         return kind, offsets, self
 
+    def resolve_all(self, data):
+        """[(kind, [write-offsets], concrete-gate)] — из одного элемента для Gate."""
+        return [self.resolve(data)]
+
 
 class MultiGate:
-    """One logical gate whose machine code differs per CPU arch (the Manager's auth check
-    compiles to distinct amd64 vs arm64 instructions), so it declares one Gate signature
-    per arch. A given binary matches exactly one — different archs share no byte pattern —
-    so there's no ambiguity; the first that finds a match wins."""
+    """One logical gate whose machine code differs per CPU arch and per build
+    (the CLI eligibility check compiles to distinct instructions on amd64 vs
+    arm64, and Apple reshaped it again in 1.2.7), so it declares one Gate
+    signature per variant. Architectures never overlap, but one binary CAN
+    match several same-arch gates at once (arm64 1.2.7 has both the inline w2
+    check in the screen function and the w4 check inside the check helper) —
+    every unpatched match must be patched, otherwise the screen survives."""
 
     def __init__(self, *gates, desc=""):
         self.gates = gates
         self.desc = desc
 
-    def resolve(self, data):
+    def resolve_all(self, data):
+        """All matching sub-gates as [(kind, [write-offsets], concrete-gate)].
+        LookupError, если ни одна сигнатура не подошла (неизвестный билд)."""
+        matches = []
         err = None
         for g in self.gates:
             try:
-                return g.resolve(data)
+                matches.append(g.resolve(data))
             except LookupError as e:
                 err = e
-        raise err or LookupError("no gate signature matched")
+        if not matches:
+            raise err or LookupError("no gate signature matched")
+        return matches
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +147,26 @@ CLI_GATE_ARM64_W4 = Gate(
     offset=4,
     desc="eligibility screen off (arm64, w4)",
 )
+# arm64 (CLI 1.2.7+, инлайн-проверка в функции экрана) — главный гейт экрана,
+# без него экран "Eligibility check failed:" выживает даже с пропатченным w4:
+#   cbnz x1,? ; cbz x0,eligible ; ldrb w2,[x0,#8] ; tbnz w2,#0,eligible
+#   bl check_helper ...
+# mov w2,#1 заставляет tbnz сразу уходить в eligible, не вызывая хелпер.
+# Сигнатура строгая: ровно одно вхождение в linux/mac/windows arm64 1.2.7.
+CLI_GATE_ARM64_W2 = Gate(
+    rb"[\x01\x21\x41\x61\x81\xa1\xc1\xe1]..\xb5[\x00\x20\x40\x60\x80\xa0\xc0\xe0]..\xb4"
+    rb"\x02\x20\x40\x39[\x02\x22\x42\x62\x82\xa2\xc2\xe2].[\x00-\x07]\x37...[\x94-\x97]",
+    rb"[\x01\x21\x41\x61\x81\xa1\xc1\xe1]..\xb5[\x00\x20\x40\x60\x80\xa0\xc0\xe0]..\xb4"
+    rb"\x22\x00\x80\x52[\x02\x22\x42\x62\x82\xa2\xc2\xe2].[\x00-\x07]\x37...[\x94-\x97]",
+    b"\x22\x00\x80\x52",
+    offset=8,
+    desc="eligibility screen off (arm64, w2)",
+)
 
 CLI_GATE = MultiGate(
     CLI_GATE_X64,
     CLI_GATE_ARM64,
+    CLI_GATE_ARM64_W2,
     CLI_GATE_ARM64_W4,
     desc="eligibility screen off",
 )
@@ -208,8 +236,8 @@ def get_status(path):
             states = []
             for gate, _ in ALL_GATES:
                 try:
-                    state, off, g = gate.resolve(d)
-                    states.append(state)
+                    for state, _offsets, _g in gate.resolve_all(d):
+                        states.append(state)
                 except LookupError:
                     return ("unknown", None)
             if all(s == "patched" for s in states):
@@ -315,15 +343,16 @@ def do_patch_agy(path):
                 all_patched = True
                 for gate_obj, gate_label in ALL_GATES:
                     try:
-                        kind, offsets, g = gate_obj.resolve(d)
+                        matches = gate_obj.resolve_all(d)
                     except LookupError as e:
                         err(f"{gate_label}: {e}")
                         handle_patch_failure()
                         return
-                    if kind == "unpatched":
-                        all_patched = False
-                        for off in offsets:
-                            patches.append((off, g))
+                    for kind, offsets, g in matches:
+                        if kind == "unpatched":
+                            all_patched = False
+                            for off in offsets:
+                                patches.append((off, g))
                 if all_patched:
                     hint("agy already patched (all gates).")
                     if not confirm_with_captcha("Apply patch anyway?"):
@@ -331,9 +360,9 @@ def do_patch_agy(path):
                     # re-patch: перезаписываем все гейты
                     patches = []
                     for gate_obj, _ in ALL_GATES:
-                        kind, offsets, g = gate_obj.resolve(d)
-                        for off in offsets:
-                            patches.append((off, g))
+                        for _kind, offsets, g in gate_obj.resolve_all(d):
+                            for off in offsets:
+                                patches.append((off, g))
         except OSError as e:
             err(f"Read error: {e}")
             return
