@@ -126,10 +126,11 @@ def remove_macos_immutable_flags(path):
     # -R работает и для одиночных файлов, и для директорий.
     # Пробуем сначала связку nouchg,noschg, затем по отдельности
     # (noschg без Recovery может не сняться — это нормально).
+    # Абсолютный путь /usr/bin/chflags: в frozen-сборках PATH может быть пустым.
     for args in (
-        ["chflags", "-R", "nouchg,noschg", path],
-        ["chflags", "-R", "nouchg", path],
-        ["chflags", "nouchg", path],
+        ["/usr/bin/chflags", "-R", "nouchg,noschg", path],
+        ["/usr/bin/chflags", "-R", "nouchg", path],
+        ["/usr/bin/chflags", "nouchg", path],
     ):
         try:
             res = subprocess.run(
@@ -172,13 +173,17 @@ def ensure_macos_writable(path):
 
 
 def remove_macos_quarantine(path):
-    """Снимает атрибут com.apple.quarantine с .app-бандла."""
+    """Снимает атрибут com.apple.quarantine с .app-бандла.
+
+    Используется встроенная утилита /usr/bin/xattr — дополнительные
+    Python-пакеты не нужны, работает и во frozen-сборках без os.*xattr API.
+    """
     import sys
     if sys.platform != "darwin":
         return
     try:
         subprocess.run(
-            ["xattr", "-dr", "com.apple.quarantine", path],
+            ["/usr/bin/xattr", "-dr", "com.apple.quarantine", path],
             check=False, capture_output=True, timeout=30,
         )
     except FileNotFoundError:
@@ -211,7 +216,7 @@ def resign_macos_bundle(main_js_path):
     info(f"Re-signing {os.path.basename(app_path)} (ad-hoc)...")
     try:
         subprocess.run(
-            ["codesign", "--force", "--deep", "--sign", "-", app_path],
+            ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", app_path],
             check=True, capture_output=True, text=True, timeout=60,
         )
         ok("Ad-hoc signature applied")
@@ -243,7 +248,7 @@ def resign_macos_binary(path):
     info(f"Re-signing {os.path.basename(real)} (ad-hoc)...")
     try:
         subprocess.run(
-            ["codesign", "--force", "--sign", "-", real],
+            ["/usr/bin/codesign", "--force", "--sign", "-", real],
             check=True, capture_output=True, text=True, timeout=60,
         )
         ok("Ad-hoc signature applied")

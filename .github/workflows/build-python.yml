@@ -1,7 +1,15 @@
 name: Build Python
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
+
+# Отмена устаревших сборок при новых коммитах в ту же ветку,
+# чтобы очередь не росла при частых пушах.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

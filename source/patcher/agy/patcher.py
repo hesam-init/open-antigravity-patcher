@@ -102,12 +102,18 @@ CLI_GATE_X64 = Gate(
 )
 # arm64:
 #   cbnz x1,error ; cbz x0,eligible ; ldrb w1,[x0,#8] ; tbnz w1,#0,eligible
-#   bl failure_builder
+#   bl failure_builder + spills.
 # Loading 1 instead makes tbnz always select eligible.
-# Хвост (bl + stores) варьируется — в паттерн не включается.
+# Единый строгий гейт покрывает оба известных хвоста:
+#   - классика: x0/x1/x2 -> [sp,#0x90]/[sp,#0x60]/[sp,#0x80]
+#   - macOS-билд: x0/x1/x2/x3 -> [sp,#0x98]/[sp,#0x60]/[sp,#0x88]/[sp,#0x58]
 CLI_GATE_ARM64 = Gate(
-    rb"...\xb5...\xb4\x01\x20\x40\x39...\x37",
-    rb"...\xb5...\xb4\x21\x00\x80\x52...\x37",
+    rb"...\xb5...\xb4\x01\x20\x40\x39[\x01\x21\x41\x61\x81\xa1\xc1\xe1].[\x00-\x07]\x37"
+    rb"...[\x94-\x97](?:\xe0\x4b\x00\xf9\xe1\x33\x00\xf9\xe2\x43\x00\xf9"
+    rb"|\xe0\x4f\x00\xf9\xe1\x33\x00\xf9\xe2\x47\x00\xf9\xe3\x2f\x00\xf9)",
+    rb"...\xb5...\xb4\x21\x00\x80\x52[\x01\x21\x41\x61\x81\xa1\xc1\xe1].[\x00-\x07]\x37"
+    rb"...[\x94-\x97](?:\xe0\x4b\x00\xf9\xe1\x33\x00\xf9\xe2\x43\x00\xf9"
+    rb"|\xe0\x4f\x00\xf9\xe1\x33\x00\xf9\xe2\x47\x00\xf9\xe3\x2f\x00\xf9)",
     b"\x21\x00\x80\x52",
     offset=8,
     desc="eligibility screen off (arm64)",
@@ -125,18 +131,32 @@ ALL_GATES = [
 
 
 @contextlib.contextmanager
+def _scan_data(f):
+    # Reading a modified signed Mach-O through mmap can cause an uncatchable
+    # CODESIGNING SIGKILL on macOS, including during post-write verification.
+    if sys.platform == "darwin":
+        f.seek(0)
+        yield f.read()
+        return
+    if os.fstat(f.fileno()).st_size == 0:
+        yield b""
+        return
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        yield mm
+    finally:
+        mm.close()
+
+
+@contextlib.contextmanager
 def _mapped(path):
-    """Read-only, zero-copy bytes-view (работает с .find(), слайсами, re) для
-    сканирования сигнатур — не грузит мульти-МБ бинарь в ОЗУ целиком."""
+    """Read-only bytes-view для сканирования сигнатур.
+
+    На macOS не маппит страницы подписанного файла (SIGKILL-риск),
+    а читает через _scan_data; на остальных ОС — zero-copy mmap."""
     with open(path, "rb") as f:
-        if os.fstat(f.fileno()).st_size == 0:
-            yield b""
-            return
-        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        try:
-            yield mm
-        finally:
-            mm.close()
+        with _scan_data(f) as data:
+            yield data
 
 
 def is_locked(path):

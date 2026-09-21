@@ -136,16 +136,32 @@ def check_antigravity_version(asar_path):
 
 
 @contextlib.contextmanager
+def _scan_data(f):
+    # Reading a modified signed Mach-O through mmap can cause an uncatchable
+    # CODESIGNING SIGKILL on macOS, including during post-write verification.
+    if sys.platform == "darwin":
+        f.seek(0)
+        yield f.read()
+        return
+    if os.fstat(f.fileno()).st_size == 0:
+        yield b""
+        return
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        yield mm
+    finally:
+        mm.close()
+
+
+@contextlib.contextmanager
 def _mapped(path):
+    """Read-only bytes-view для сканирования сигнатур.
+
+    На macOS не маппит страницы подписанного файла (SIGKILL-риск),
+    а читает через _scan_data; на остальных ОС — zero-copy mmap."""
     with open(path, "rb") as f:
-        if os.fstat(f.fileno()).st_size == 0:
-            yield b""
-            return
-        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        try:
-            yield mm
-        finally:
-            mm.close()
+        with _scan_data(f) as data:
+            yield data
 
 
 def is_locked(path):
