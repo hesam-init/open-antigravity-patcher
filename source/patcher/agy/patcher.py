@@ -118,10 +118,28 @@ CLI_GATE_ARM64 = Gate(
     offset=8,
     desc="eligibility screen off (arm64)",
 )
+# arm64 (CLI 1.2.7+): проверка перекомпилирована — внешний cbnz исчез,
+# флаг читается в w4, а за tbnz идёт ldp вместо bl+spills:
+#   cbz x0,eligible ; ldrb w4,[x0,#8] ; tbnz w4,#0,eligible
+#   ldp x4,x5,[x0,#0x48] ...
+# mov w4,#1 заставляет существующий tbnz всегда выбирать ветку eligible.
+# Отдельный гейт: фикс зависит от регистра (w4, не w1), в один паттерн
+# со старым не объединяется. Сигнатура строгая: ровно одно вхождение
+# в linux/mac/windows arm64-билдрах 1.2.7 (проверено тестом test_cli_releases).
+CLI_GATE_ARM64_W4 = Gate(
+    rb"[\x00\x20\x40\x60\x80\xa0\xc0\xe0]..\xb4\x04\x20\x40\x39"
+    rb"[\x04\x24\x44\x64\x84\xa4\xc4\xe4].[\x00-\x07]\x37\x04\x94\x44\xa9",
+    rb"[\x00\x20\x40\x60\x80\xa0\xc0\xe0]..\xb4\x24\x00\x80\x52"
+    rb"[\x04\x24\x44\x64\x84\xa4\xc4\xe4].[\x00-\x07]\x37\x04\x94\x44\xa9",
+    b"\x24\x00\x80\x52",
+    offset=4,
+    desc="eligibility screen off (arm64, w4)",
+)
 
 CLI_GATE = MultiGate(
     CLI_GATE_X64,
     CLI_GATE_ARM64,
+    CLI_GATE_ARM64_W4,
     desc="eligibility screen off",
 )
 
